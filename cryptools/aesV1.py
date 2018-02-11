@@ -14,8 +14,38 @@
 import os
 import sys
 import math
+import random
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+
+'''
+openssl man page: https://wiki.openssl.org/index.php/Manual:Enc(1)
+
+** linux command line 1 **
+    python -c "print('0'*16, end='')" | openssl enc -e -aes-128-ecb -nosalt -K '0000000000000000' -nopad -a
+    output (base64):
+        4IaCvl8rGKboQ3oVsRDUGA==
+        
+** linux command line 2 **
+    python -c "print('0'*16, end='')" | openssl enc -e -aes-128-ecb -nosalt -K '0000000000000000' -nopad -a | base64 -d | od -t x8 | cut -s -d' ' -f2-
+    output (hex; little endian):
+        a6182b5fbe8286e0 18d410b1157a43e8
+
+*** linux command 3 **
+    python -c "print('0'*16, end='')" | openssl enc -e -aes-128-ecb -nosalt -K '0000000000000000' -nopad -a | base64 -d -i | hexdump -v -e '/1 "%02x" '
+    output (hex):
+        e08682be5f2b18a6e8437a15b110d418
+        
+** linux command 4 ***
+    python -c "print('0'*16, end='')" | openssl enc -e -aes-128-ecb -nosalt -K '0000000000000000' -nopad -a | base64 -d -i | hexdump -v -e '/1 "%02x" ' | xxd -r -p - | xxd -b
+    output (bits):
+        00000000: 11100000 10000110 10000010 10111110 01011111 00101011  ...._+
+        00000006: 00011000 10100110 11101000 01000011 01111010 00010101  ...Cz.
+        0000000c: 10110001 00010000 11010100 00011000                    ....
+
+'''
+
 
 # close all plots
 plt.close('all')
@@ -680,38 +710,72 @@ def entropy(x):
     
     return p, entr
 
+def int2bits(n, bits_size=8):
+    return ''.join(str(1 & int(n) >> i) for i in range(bits_size)[::-1])
+
+def pad(a, i):
+    return a if len(a) > i else [0] * (i-len(a)) + a
+
+def chgbase(n, base):
+    if base <= 1: return -1
+    n = int(n)
+    r = (n % base)
+    if n >= base:
+        return chgbase( int(n/base), base) + [r]
+    return [r]
+
 if __name__ == "__main__":
     
-    iterations = 1000
+    '''
+    output (base64):
+        4IaCvl8rGKboQ3oVsRDUGA==
+    output (hex):
+        e08682be5f2b18a6e8437a15b110d418
+    output (bits):
+        00000000: 11100000 10000110 10000010 10111110 01011111 00101011  ...._+
+        00000006: 00011000 10100110 11101000 01000011 01111010 00010101  ...Cz.
+        0000000c: 10110001 00010000 11010100 00011000                    ....
+
+    '''
+    
+    np.set_printoptions(threshold=np.inf)
+    
+    imin = 0
+    imax = 10000
+    inc = 1
     block_size = 128    # 128 bits - 4 words of 32 bits
     keysize = 128
     
     aes = AES()
     
-    plaintexts = np.random.randint(low=32, high=127, size=(iterations, block_size))
-    cipherkey = np.random.randint(low=0, high=256, size=(1, keysize))
+    bitar = [pad(chgbase(x, 2**8), 16) for x in range(imin, imax, inc)]
+    bitar = np.array([np.array(xi) for xi in bitar])
     
-    lstbits = np.empty((0, block_size), int)
-    lstbitsmod = np.empty((0, block_size), int)
+    cipherkey = np.zeros((1, keysize), dtype=np.int)
     
-    n = 50
-    for plaintext in plaintexts:
-        
-        ciphertext = aes.encrypt(plaintext, cipherkey.flatten(), keysize)
-        
-        seq = ''.join(['{:08b}'.format(i) for i in ciphertext])
-        seqmod = seq[:-n] + '0'*n
-        
-        seq = np.fromiter(seq, dtype=np.int)
-        seq = np.reshape(seq, (-1, block_size))
-        lstbits = np.concatenate((lstbits, seq), axis=0)
-        
-        seqmod = np.fromiter(seqmod, dtype=np.int)
-        seqmod = np.reshape(seqmod, (-1, block_size))
-        lstbitsmod = np.concatenate((lstbitsmod, seqmod), axis=0)
+    xlist = np.empty((0, block_size), int)
+    ylist = np.empty((0, block_size), int)
     
+    for raw in bitar:
+        
+        # encode
+        #xints = aes.encrypt(raw, cipherkey.flatten(), keysize)
+        #xhex = [hex(x) for x in xints]
+        xbits = ''.join(['{:08b}'.format(i) for i in raw]) 
+        xbits = np.fromiter(xbits, dtype=np.int)
+        xbits = np.reshape(xbits, (-1, block_size))
+        xlist = np.concatenate((xlist, xbits), axis=0)
+        
+        # decode
+        yints = aes.decrypt(raw, cipherkey.flatten(), keysize)
+        yhex = [hex(x) for x in yints]
+        ybits = ''.join(['{:08b}'.format(i) for i in yints])
+        ybits = np.fromiter(ybits, dtype=np.int)
+        ybits = np.reshape(ybits, (-1, block_size))
+        ylist = np.concatenate((ylist, ybits), axis=0)
     
-    prob, entr = entropy(lstbits)
+    '''
+    prob, entr = entropy(xlist)
     entr = np.reshape(entr, (-1, 1))
     
     data = np.concatenate((prob, entr), axis=1)
@@ -723,25 +787,53 @@ if __name__ == "__main__":
     x = data[:,1]
     y = data[:,2]
     
-    
-    probmod, entrmod = entropy(lstbitsmod)
-    entrmod = np.reshape(entrmod, (-1, 1))
-    
-    datamod = np.concatenate((probmod, entrmod), axis=1)
-    
-    datamod = datamod[datamod[:,1].argsort()]        # sort data by column 1
-    
-    #data, indices = np.unique(data, return_inverse=True, axis=0)    # remove duplicated
-    
-    xmod = datamod[:,1]
-    ymod = datamod[:,2]
-    
     plt.plot(x, y)
-    plt.plot(xmod, ymod)
     plt.grid(color='k', linestyle='--', linewidth=.5)
     plt.title('Entropy')
     plt.xlabel('Probabilities')
-    plt.show()
+    '''
     
-    sys.exit(0)
+    x = np.sum(xlist, axis=1)
+    y = np.sum(ylist, axis=1)
+    
+    ymin = np.amin(y)
+    ymax = np.amax(y)
+    ymean = np.mean(y)
+    ystd = np.std(y)
+    
+    y1stdlow =  ymean - 1 * ystd
+    y2stdlow =  ymean - 2 * ystd
+    y3stdlow =  ymean - 3 * ystd
+    y4stdlow =  ymean - 4 * ystd
+    
+    y1stdtop =  ymean + 1 * ystd
+    y2stdtop =  ymean + 2 * ystd
+    y3stdtop =  ymean + 3 * ystd
+    y4stdtop =  ymean + 4 * ystd
+    
+    print('mean = {mean}; min = {min}; max = {max}; std = {std}; ' \
+          '1-std = {std1}; 2-std = {std2}; 3-std = {std4}; 4-std = {std4};'
+              .format(mean=ymean, min=ymin, max=ymax, std=ystd,
+                      std1=y1stdtop, std2=y2stdtop, std3=y3stdtop, std4=y4stdtop ))
+    
+    # Create figure and axes
+    fig,ax = plt.subplots(1)
+    for k in range(0,len(x)):
+        # Create a Rectangle patch
+        rect = patches.Rectangle((x[k], y[k]),1,.5,linewidth=1)
+        # Add the patch to the Axes
+        ax.add_patch(rect)
+    
+    ax.plot(x, np.repeat(ymax, len(x)),color='r', linestyle='--', linewidth=.5)
+    ax.plot(x, np.repeat(ymin, len(x)),color='r', linestyle='--', linewidth=.5)
+    ax.plot(x, np.repeat(ymean, len(x)),color='r', linestyle='--', linewidth=.5)
+    ax.set_xlim(np.amin(x, axis=0),np.amax(x, axis=0))
+    ax.set_ylim(0,128)
+    plt.grid(color='k', linestyle='--', linewidth=.5)
+    
+    ax.set_title('AES Decryption - Chosen ciphertext')
+    ax.set_xlabel('Ciphertexts')
+    ax.set_ylabel('Plaintexts')
+    
+    plt.show()
     
