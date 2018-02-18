@@ -227,18 +227,40 @@ class AES(object):
                 roundKey[j*4+i] = expandedKey[roundKeyPointer + i*4 + j]
         return roundKey
 
-    def galois_multiplication(self, a, b):
+    def galois_multiplication(self, a, b):        
+        """ Multiply two numbers in the GF(2^8) finite field defined 
+        by the polynomial x^8 + x^4 + x^3 + x + 1 = 0
+        using the Russian Peasant Multiplication algorithm
+        (the other way being to do carry-less multiplication followed by a modular reduction)
+        https://en.wikipedia.org/wiki/Ancient_Egyptian_multiplication#Russian_peasant_multiplication
+        """
+        
         """Galois multiplication of 8 bit characters a and b."""
         p = 0
+        
         for counter in range(8):
-            if b & 1: p ^= a
+            
+            """ if b is odd, then add the corresponding a to p
+            (final product = sum of all a's corresponding to odd b's) """
+            if b & 1:
+                """ since we're in GF(2^m), addition is an XOR """
+                p ^= a
+            
+            """ GF modulo: if a >= 128, then it will overflow when shifted left, so reduce """
             hi_bit_set = a & 0x80
+            
+            """ equivalent to a*2 """
             a <<= 1
             # keep a 8 bit
             a &= 0xFF
+            
+            """ XOR with the primitive polynomial x^8 + x^4 + x^3 + x + 1 (0b1_0001_1011) """
             if hi_bit_set:
                 a ^= 0x1b
+            
+            """ equivalent to b // 2 """
             b >>= 1
+            
         return p
 
     #
@@ -319,31 +341,35 @@ class AES(object):
     # Perform the initial operations, the standard round, and the final
     # operations of the forward aes, creating a round key for each round
     def aes_main(self, state, expandedKey, nbrRounds):
+
         state = self.addRoundKey(state, self.createRoundKey(expandedKey, 0))
         i = 1
+        
         while i < nbrRounds:
-            state = self.aes_round(state,
-                                   self.createRoundKey(expandedKey, 16*i))
+            state = self.aes_round(state, self.createRoundKey(expandedKey, 16*i))
             i += 1
+            
         state = self.subBytes(state, False)
         state = self.shiftRows(state, False)
-        state = self.addRoundKey(state,
-                                 self.createRoundKey(expandedKey, 16*nbrRounds))
+        state = self.addRoundKey(state, self.createRoundKey(expandedKey, 16*nbrRounds))
+        
         return state
 
     # Perform the initial operations, the standard round, and the final
     # operations of the inverse aes, creating a round key for each round
     def aes_invMain(self, state, expandedKey, nbrRounds):
-        state = self.addRoundKey(state,
-                                 self.createRoundKey(expandedKey, 16*nbrRounds))
+        
+        state = self.addRoundKey(state, self.createRoundKey(expandedKey, 16*nbrRounds))
         i = nbrRounds - 1
+        
         while i > 0:
-            state = self.aes_invRound(state,
-                                      self.createRoundKey(expandedKey, 16*i))
+            state = self.aes_invRound(state, self.createRoundKey(expandedKey, 16*i))
             i -= 1
+            
         state = self.shiftRows(state, True)
         state = self.subBytes(state, True)
         state = self.addRoundKey(state, self.createRoundKey(expandedKey, 0))
+        
         return state
 
     # encrypts a 128 bit input block against the given key of size specified
@@ -431,260 +457,14 @@ class AES(object):
         return output
 
 
-class AESModeOfOperation(object):
-    '''Handles AES with plaintext consistingof multiple blocks.
-    Choice of block encoding modes:  OFT, CFB, CBC
-    '''
-    # Very annoying code:  all is for an object, but no state is kept!
-    # Should just be plain functions in an AES_BlockMode module.
-    aes = AES()
-
-    # structure of supported modes of operation
-    modeOfOperation = dict(OFB=0, CFB=1, CBC=2)
-
-    # converts a 16 character string into a number array
-    def convertString(self, string, start, end, mode):
-        if end - start > 16: end = start + 16
-        if mode == self.modeOfOperation["CBC"]: ar = [0] * 16
-        else: ar = []
-
-        i = start
-        j = 0
-        while len(ar) < end - start:
-            ar.append(0)
-        while i < end:
-            ar[j] = ord(string[i])
-            j += 1
-            i += 1
-        return ar
-
-    # Mode of Operation Encryption
-    # stringIn - Input String
-    # mode - mode of type modeOfOperation
-    # hexKey - a hex key of the bit length size
-    # size - the bit length of the key
-    # hexIV - the 128 bit hex Initilization Vector
-    def encrypt(self, stringIn, mode, key, size, IV):
-        if len(key) % size:
-            return None
-        if len(IV) % 16:
-            return None
-        # the AES input/output
-        plaintext = []
-        iput = [0] * 16
-        output = []
-        ciphertext = [0] * 16
-        # the output cipher string
-        cipherOut = []
-        # char firstRound
-        firstRound = True
-        if stringIn != None:
-            for j in range(int(math.ceil(float(len(stringIn))/16))):
-                start = j*16
-                end = j*16+16
-                if  end > len(stringIn):
-                    end = len(stringIn)
-                plaintext = self.convertString(stringIn, start, end, mode)
-                # print 'PT@%s:%s' % (j, plaintext)
-                if mode == self.modeOfOperation["CFB"]:
-                    if firstRound:
-                        output = self.aes.encrypt(IV, key, size)
-                        firstRound = False
-                    else:
-                        output = self.aes.encrypt(iput, key, size)
-                    for i in range(16):
-                        if len(plaintext)-1 < i:
-                            ciphertext[i] = 0 ^ output[i]
-                        elif len(output)-1 < i:
-                            ciphertext[i] = plaintext[i] ^ 0
-                        elif len(plaintext)-1 < i and len(output) < i:
-                            ciphertext[i] = 0 ^ 0
-                        else:
-                            ciphertext[i] = plaintext[i] ^ output[i]
-                    for k in range(end-start):
-                        cipherOut.append(ciphertext[k])
-                    iput = ciphertext
-                elif mode == self.modeOfOperation["OFB"]:
-                    if firstRound:
-                        output = self.aes.encrypt(IV, key, size)
-                        firstRound = False
-                    else:
-                        output = self.aes.encrypt(iput, key, size)
-                    for i in range(16):
-                        if len(plaintext)-1 < i:
-                            ciphertext[i] = 0 ^ output[i]
-                        elif len(output)-1 < i:
-                            ciphertext[i] = plaintext[i] ^ 0
-                        elif len(plaintext)-1 < i and len(output) < i:
-                            ciphertext[i] = 0 ^ 0
-                        else:
-                            ciphertext[i] = plaintext[i] ^ output[i]
-                    for k in range(end-start):
-                        cipherOut.append(ciphertext[k])
-                    iput = output
-                elif mode == self.modeOfOperation["CBC"]:
-                    for i in range(16):
-                        if firstRound:
-                            iput[i] =  plaintext[i] ^ IV[i]
-                        else:
-                            iput[i] =  plaintext[i] ^ ciphertext[i]
-                    # print 'IP@%s:%s' % (j, iput)
-                    firstRound = False
-                    ciphertext = self.aes.encrypt(iput, key, size)
-                    # always 16 bytes because of the padding for CBC
-                    for k in range(16):
-                        cipherOut.append(ciphertext[k])
-        return mode, len(stringIn), cipherOut
-
-    # Mode of Operation Decryption
-    # cipherIn - Encrypted String
-    # originalsize - The unencrypted string length - required for CBC
-    # mode - mode of type modeOfOperation
-    # key - a number array of the bit length size
-    # size - the bit length of the key
-    # IV - the 128 bit number array Initilization Vector
-    def decrypt(self, cipherIn, originalsize, mode, key, size, IV):
-        # cipherIn = unescCtrlChars(cipherIn)
-        if len(key) % size:
-            return None
-        if len(IV) % 16:
-            return None
-        # the AES input/output
-        ciphertext = []
-        iput = []
-        output = []
-        plaintext = [0] * 16
-        # the output plain text character list
-        chrOut = []
-        # char firstRound
-        firstRound = True
-        if cipherIn != None:
-            for j in range(int(math.ceil(float(len(cipherIn))/16))):
-                start = j*16
-                end = j*16+16
-                if j*16+16 > len(cipherIn):
-                    end = len(cipherIn)
-                ciphertext = cipherIn[start:end]
-                if mode == self.modeOfOperation["CFB"]:
-                    if firstRound:
-                        output = self.aes.encrypt(IV, key, size)
-                        firstRound = False
-                    else:
-                        output = self.aes.encrypt(iput, key, size)
-                    for i in range(16):
-                        if len(output)-1 < i:
-                            plaintext[i] = 0 ^ ciphertext[i]
-                        elif len(ciphertext)-1 < i:
-                            plaintext[i] = output[i] ^ 0
-                        elif len(output)-1 < i and len(ciphertext) < i:
-                            plaintext[i] = 0 ^ 0
-                        else:
-                            plaintext[i] = output[i] ^ ciphertext[i]
-                    for k in range(end-start):
-                        chrOut.append(chr(plaintext[k]))
-                    iput = ciphertext
-                elif mode == self.modeOfOperation["OFB"]:
-                    if firstRound:
-                        output = self.aes.encrypt(IV, key, size)
-                        firstRound = False
-                    else:
-                        output = self.aes.encrypt(iput, key, size)
-                    for i in range(16):
-                        if len(output)-1 < i:
-                            plaintext[i] = 0 ^ ciphertext[i]
-                        elif len(ciphertext)-1 < i:
-                            plaintext[i] = output[i] ^ 0
-                        elif len(output)-1 < i and len(ciphertext) < i:
-                            plaintext[i] = 0 ^ 0
-                        else:
-                            plaintext[i] = output[i] ^ ciphertext[i]
-                    for k in range(end-start):
-                        chrOut.append(chr(plaintext[k]))
-                    iput = output
-                elif mode == self.modeOfOperation["CBC"]:
-                    output = self.aes.decrypt(ciphertext, key, size)
-                    for i in range(16):
-                        if firstRound:
-                            plaintext[i] = IV[i] ^ output[i]
-                        else:
-                            plaintext[i] = iput[i] ^ output[i]
-                    firstRound = False
-                    if originalsize is not None and originalsize < end:
-                        for k in range(originalsize-start):
-                            chrOut.append(chr(plaintext[k]))
-                    else:
-                        for k in range(end-start):
-                            chrOut.append(chr(plaintext[k]))
-                    iput = ciphertext
-        return "".join(chrOut)
-
-
-def append_PKCS7_padding(s):
-    """return s padded to a multiple of 16-bytes by PKCS7 padding"""
-    numpads = 16 - (len(s)%16)
-    return s + numpads*chr(numpads)
-
-def strip_PKCS7_padding(s):
-    """return s stripped of PKCS7 padding"""
-    if len(s)%16 or not s:
-        raise ValueError("String of len %d can't be PCKS7-padded" % len(s))
-    numpads = ord(s[-1])
-    if numpads > 16:
-        raise ValueError("String ending with %r can't be PCKS7-padded" % s[-1])
-    return s[:-numpads]
-
-def encryptData(key, data, mode=AESModeOfOperation.modeOfOperation["CBC"]):
-    """encrypt `data` using `key`
-
-    `key` should be a string of bytes.
-
-    returned cipher is a string of bytes prepended with the initialization
-    vector.
-
-    """
-    key = map(ord, key)
-    if mode == AESModeOfOperation.modeOfOperation["CBC"]:
-        data = append_PKCS7_padding(data)
-    keysize = len(key)
-    assert keysize in AES.keySize.values(), 'invalid key size: %s' % keysize
-    # create a new iv using random data
-    iv = [ord(i) for i in os.urandom(16)]
-    moo = AESModeOfOperation()
-    (mode, length, ciph) = moo.encrypt(data, mode, key, keysize, iv)
-    # With padding, the original length does not need to be known. It's a bad
-    # idea to store the original message length.
-    # prepend the iv.
-    return ''.join(map(chr, iv)) + ''.join(map(chr, ciph))
-
-def decryptData(key, data, mode=AESModeOfOperation.modeOfOperation["CBC"]):
-    """decrypt `data` using `key`
-
-    `key` should be a string of bytes.
-
-    `data` should have the initialization vector prepended as a string of
-    ordinal values.
-    """
-
-    key = map(ord, key)
-    keysize = len(key)
-    assert keysize in AES.keySize.values(), 'invalid key size: %s' % keysize
-    # iv is first 16 bytes
-    iv = map(ord, data[:16])
-    data = map(ord, data[16:])
-    moo = AESModeOfOperation()
-    decr = moo.decrypt(data, None, mode, key, keysize, iv)
-    if mode == AESModeOfOperation.modeOfOperation["CBC"]:
-        decr = strip_PKCS7_padding(decr)
-    return decr
-
 def generateRandomKey(keysize):
     """Generates a key from random data of length `keysize`.    
     The returned key is a string of bytes.    
     """
-    if keysize not in (16, 24, 32):
-        emsg = 'Invalid keysize, %s. Should be one of (16, 24, 32).'
+    if keysize not in (128, 192, 256):
+        emsg = 'Invalid keysize, %s. Should be one of (128, 192, 256).'
         raise ValueError(emsg % keysize)
-    return os.urandom(keysize)
+    return os.urandom(int(keysize/16))
 
 def safe_ln2(x, minval=0.0000000001):
     return np.log2(x.clip(min=minval))
@@ -712,6 +492,11 @@ def entropy(x):
 
 def int2bits(n, bits_size=8):
     return ''.join(str(1 & int(n) >> i) for i in range(bits_size)[::-1])
+
+def arint2bits(ar, block_size=128):
+    arbits = ''.join(['{:08b}'.format(i) for i in ar])
+    arbits = np.fromiter(arbits, dtype=np.int)
+    return np.reshape(arbits, (-1, block_size))
 
 def pad(a, i):
     return a if len(a) > i else [0] * (i-len(a)) + a
@@ -741,41 +526,54 @@ if __name__ == "__main__":
     np.set_printoptions(threshold=np.inf)
     
     imin = 0
-    imax = 10000
+    imax = 1000
     inc = 1
     block_size = 128    # 128 bits - 4 words of 32 bits
     keysize = 128
     
     aes = AES()
     
-    bitar = [pad(chgbase(x, 2**8), 16) for x in range(imin, imax, inc)]
-    bitar = np.array([np.array(xi) for xi in bitar])
+    #bitar = [pad(chgbase(x, 2**8), 16) for x in range(imin, imax, inc)]
+    #bitar = np.array([np.array(xi) for xi in bitar])
+    bitar = np.random.randint(32, high=127, size=(int((imax-imin)/inc), int(keysize/8)), dtype='int')
     
-    cipherkey = np.zeros((1, keysize), dtype=np.int)
+    #cipherkey = np.zeros((1, keysize), dtype=np.int)
+    cipherkey = np.random.randint(32, high=127, size=(1, keysize), dtype='int')
     
-    xlist = np.empty((0, block_size), int)
-    ylist = np.empty((0, block_size), int)
+    enclst = np.empty((0, block_size), int)
+    declst = np.empty((0, block_size), int)
+    rawlst = np.empty((0, block_size), int)
     
     for raw in bitar:
         
+        rawlst = ''.join(['{:08b}'.format(i) for i in raw]) 
+        rawlst = np.fromiter(rawlst, dtype=np.int)
+        rawlst = np.reshape(rawlst, (-1, block_size))
+        rawlst = np.concatenate((rawlst, rawlst), axis=0)
+        
         # encode
-        #xints = aes.encrypt(raw, cipherkey.flatten(), keysize)
+        xints = aes.encrypt(raw, cipherkey.flatten(), keysize)
         #xhex = [hex(x) for x in xints]
-        xbits = ''.join(['{:08b}'.format(i) for i in raw]) 
+        xbits = ''.join(['{:08b}'.format(i) for i in xints]) 
         xbits = np.fromiter(xbits, dtype=np.int)
         xbits = np.reshape(xbits, (-1, block_size))
-        xlist = np.concatenate((xlist, xbits), axis=0)
+        enclst = np.concatenate((enclst, xbits), axis=0)
         
         # decode
-        yints = aes.decrypt(raw, cipherkey.flatten(), keysize)
-        yhex = [hex(x) for x in yints]
-        ybits = ''.join(['{:08b}'.format(i) for i in yints])
-        ybits = np.fromiter(ybits, dtype=np.int)
-        ybits = np.reshape(ybits, (-1, block_size))
-        ylist = np.concatenate((ylist, ybits), axis=0)
+        #yints = aes.decrypt(raw, cipherkey.flatten(), keysize)
+        #yhex = [hex(x) for x in yints]
+        #ybits = ''.join(['{:08b}'.format(i) for i in yints])
+        #ybits = np.fromiter(ybits, dtype=np.int)
+        #ybits = np.reshape(ybits, (-1, block_size))
+        #declst = np.concatenate((declst, ybits), axis=0)
     
-    '''
-    prob, entr = entropy(xlist)
+    
+    rawlst = rawlst[:,0:8]
+    enclst = enclst[:,0:8]
+    
+    distlst = np.bitwise_xor(rawlst,enclst)
+    
+    prob, entr = entropy(enclst)
     entr = np.reshape(entr, (-1, 1))
     
     data = np.concatenate((prob, entr), axis=1)
@@ -791,10 +589,10 @@ if __name__ == "__main__":
     plt.grid(color='k', linestyle='--', linewidth=.5)
     plt.title('Entropy')
     plt.xlabel('Probabilities')
-    '''
     
-    x = np.sum(xlist, axis=1)
-    y = np.sum(ylist, axis=1)
+    
+    x = np.sum(enclst, axis=1)
+    y = np.sum(declst, axis=1)
     
     ymin = np.amin(y)
     ymax = np.amax(y)
@@ -812,7 +610,7 @@ if __name__ == "__main__":
     y4stdtop =  ymean + 4 * ystd
     
     print('mean = {mean}; min = {min}; max = {max}; std = {std}; ' \
-          '1-std = {std1}; 2-std = {std2}; 3-std = {std4}; 4-std = {std4};'
+          '1-std = {std1}; 2-std = {std2}; 3-std = {std3}; 4-std = {std4};'
               .format(mean=ymean, min=ymin, max=ymax, std=ystd,
                       std1=y1stdtop, std2=y2stdtop, std3=y3stdtop, std4=y4stdtop ))
     
